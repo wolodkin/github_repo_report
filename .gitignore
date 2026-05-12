@@ -203,6 +203,9 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Cursor
+.cursor/
+
 # Ruff stuff:
 .ruff_cache/
 
@@ -216,3 +219,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# API & AI
+api_keys/
+ai_debug/
