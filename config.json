@@ -1,6 +1,7 @@
 {
     "paths": {
         "project_remark_and_log_file_name":"project_remark.txt",
+        "github_current_state":"github_current_state/",
         "weekly_report": "/weekly_report",
         "monthly_report": "/monthly_report",
         "project_report": "/project_report"
