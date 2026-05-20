@@ -1,6 +1,6 @@
 # github_repo_report – design (living document)
 
-This document evolves incrementally. Last substantive update: context window size via `num_ctx` in config (Ollama-native); not `max_tokens` / not `num_predict`.
+This document evolves incrementally. Last substantive update: report pipeline (1 API call/report), JSON section schema + validation, final vs `_current` drafts.
 
 ## Goals
 
@@ -96,6 +96,7 @@ Optional later: `paths.github_token_file`, `paths.clone_root` (local git supplem
   - **Ollama** (`/api/chat`, `/api/generate`): pass `num_ctx` from config in the request options.
   - **OpenAI-compatible** (OpenRouter, etc.): there is usually **no** request field for context window; use `num_ctx` **client-side** only (truncate or chunk prompts, log warnings if input exceeds budget). Do **not** map `num_ctx` to `max_tokens`.
 - **Output length** (how much the model may generate): not configured in v1 unless a separate key is added later (e.g. optional `num_predict`); omit `max_tokens` from config and from OpenRouter requests unless explicitly added later.
+- **Report JSON:** schemas defined in code per phase; see [JSON response schemas](#json-response-schemas-section-keys).
 
 ## Data flow (Phase 1)
 
@@ -115,44 +116,153 @@ flowchart LR
 
 ## Phases 2–4 — report generation (separate modules)
 
-Reference workflow and section structure: [BITS chatbot report SKILL](file:///home/alex/.hermes/skills/productivity/bits-chatbot-report/SKILL.md) (`bits-chatbot-report`). **Analyze and optimize** for `github_repo_report`: same report *types* and Markdown *sections*, but driven by **local JSON cache** + `config.json` paths, not ad-hoc Hermes leader scripts.
+Reference: [BITS chatbot report SKILL](file:///home/alex/.hermes/skills/productivity/bits-chatbot-report/SKILL.md). Same *sections* as the skill templates, but **one chat completion per report**, structured **JSON in → validate → Markdown out**.
 
-### Shared rules (from skill, adapted)
+### Pipeline (consistency & efficiency)
 
-- Output: **English Markdown**.
-- **Weekly:** only if at least one commit in that ISO week (UTC); file naming e.g. `week_YYYY-WNN.md` under `paths.weekly_report`.
-- **Monthly:** only if the month is complete and at least one weekly exists for that month; e.g. `month_YYYY-MM.md` under `paths.monthly_report`.
-- **Do not overwrite** existing weekly/monthly files once written (skip if present)—unless config later adds `force_regenerate`.
-- **Overall project doc:** after each monthly (and optionally incremental notes after weekly), **holistic rewrite** of the project report using the overall template (not append-only fragments).
-
-### Phase 2 — `modules/weekly_report`
-
-- Input: cumulative cache JSON, `prompts_and_templates.weekly_report`, `ai:config`.
-- Logic: determine undocumented ISO weeks; filter commits/issues/branches for each week; call AI with prompt + template; write Markdown to `paths.weekly_report`.
-- Sections (target template): Summary, Commits table, Technical Work, Challenges & Problems, Open Issues, Notes (include issue/branch summary)—derived from skill weekly template, refined in [`templates/weekly_report.txt`](templates/weekly_report.txt).
-
-### Phase 3 — `modules/monthly_report`
-
-- Input: weekly Markdown files for completed month, monthly prompt/template, AI config.
-- Logic: aggregate weeklies; AI evaluation (successes/failures, cumulative progress); write `month_YYYY-MM.md`.
-
-### Phase 4 — `modules/project_report`
-
-- Input: all monthly reports + cache highlights, project prompt/template.
-- Logic: holistic project documentation (Abstract, Introduction, Timeline, Architecture, Challenges log, Results, Discussion, Conclusion, Appendix)—from skill overall template, optimized in [`templates/project_report.txt`](templates/project_report.txt).
-
-Each report module: **constructor(config)**, **run/completion API**, optional **`{name}_helper`**, returns structured result to `main.py`.
+Process **sequentially per repo**; never batch multiple weeks/months into one API call.
 
 ```mermaid
 flowchart TB
   cache[github_current_state_JSON]
-  w[weekly_report_module]
-  m[monthly_report_module]
-  p[project_report_module]
-  cache --> w
-  w --> m
-  m --> p
+  w1[weekly_API_call_1]
+  w2[weekly_API_call_N]
+  m1[monthly_API_call]
+  p1[project_API_call]
+  cache --> w1
+  w1 --> w2
+  w2 --> m1
+  m1 --> p1
 ```
+
+| Step | When | API calls | Payload attached to the single request |
+|------|------|-----------|----------------------------------------|
+| **Weekly** | For each ISO week (UTC) that needs a report | **1 call per week** | Cache slice for that week (commits, issues/branches buckets, `project_remark` excerpt), prompt, section JSON schema |
+| **Monthly** | After all **weekly** files for that calendar month exist (final and/or `_current` as below) | **1 call per month** | **All weekly Markdown (or JSON) for that month** for that repo, month aggregates from cache, prompt, monthly JSON schema |
+| **Project** | After monthly step for the repo (or on demand) | **1 call per repo** | **All monthly reports** (final + optional `_current`), cache summary, prompt, project JSON schema |
+
+**Efficiency rules:**
+
+- Do not re-fetch GitHub in Phases 2–4; read only `github_current_state` + already written report files.
+- Do not combine multiple weeks or months in one completion.
+- Monthly module **must not** run for month *M* until weekly generation for *M* has finished (success or skipped-with-reason per week).
+
+### Final vs preliminary (`_current`)
+
+| Period state | Weekly filename | Monthly filename |
+|--------------|-----------------|------------------|
+| **Week completed** (ISO week ended in UTC) | `week_YYYY-WNN.md` | — |
+| **Week in progress** | `week_YYYY-WNN_current.md` | — |
+| **Month completed** | — | `month_YYYY-MM.md` |
+| **Month in progress** | — | `month_YYYY-MM_current.md` |
+
+- **Final** files (`*.md` without suffix): written once when the period is **closed**; **never overwritten** (skip if present unless `force_regenerate` is added later).
+- **Preliminary** (`*_current.md`): at most **one** per period; each run **deletes** the previous `_current` for that same week/month, then writes a new one.
+- When a week/month **becomes completed**, generate the final file if missing; keep or drop `_current` after final exists (recommend: **delete** `_current` once final is written).
+
+**Project report:** `project_documentation.md` (final) and `project_documentation_current.md` (preliminary while project/month still “open”); same single-`_current` rule.
+
+Paths: under `paths.weekly_report` / `monthly_report` / `project_report`, with **per-repo subdirectories** (see readiness §3).
+
+### AI call contract (all report phases)
+
+1. Request **one** completion per report with `response_format` set **in code** to JSON matching the phase schema (not stored in `config.json`).
+2. Parse response JSON; **validate** against schema (`jsonschema` or Pydantic in `{phase}_helper`).
+3. On validation failure: log, optionally **one retry** with error hint; do not write Markdown.
+4. Render validated JSON → Markdown using the matching file in [`templates/`](templates/) (placeholders filled from JSON keys).
+5. Store raw JSON in `ai_debug/` when `store_ai_responses` is true.
+
+Config still has **no** `response_format` key; schemas live in code (e.g. `modules/weekly_report_schema.py` or inside `_helper`).
+
+### Phase 2 — `modules/weekly_report`
+
+- Enumerate weeks with activity (≥1 commit in week) from cache.
+- Per week: **one endpoint call** → validate → write `week_…md` or `week_…_current.md`.
+
+### Phase 3 — `modules/monthly_report`
+
+- Per calendar month: ensure weeklies for that month are generated first.
+- **One endpoint call** per month; attach **all weekly report bodies for that month** (read from disk).
+- Validate → write `month_…md` or `month_…_current.md`.
+
+### Phase 4 — `modules/project_report`
+
+- **One endpoint call** per repo; attach **all monthly report files** (and optional cache summary).
+- Holistic project doc; validate → `project_documentation.md` / `project_documentation_current.md`.
+
+Each module: **constructor(config)**, **run/completion API**, optional **`{name}_helper`**, returns completion object to `main.py`.
+
+### JSON response schemas (section keys)
+
+Models must return **only** JSON objects with these keys (English string values unless noted). Helpers validate types and required fields before Markdown render.
+
+**Weekly** (`weekly_report_schema`):
+
+```json
+{
+  "summary": "2–4 sentences.",
+  "commits": [{ "date": "2026-05-12", "author": "Name", "message": "feat: …" }],
+  "github_activity": {
+    "issues": { "new": 1, "open": 2, "closed": 0, "notes": "…" },
+    "branches": { "new": 0, "open": 1, "closed": 1, "notes": "…" }
+  },
+  "technical_work": [{ "topic": "API", "body": "…" }],
+  "challenges": [{ "title": "…", "description": "…", "context": "…", "solution": "…" }],
+  "open_issues": ["…"],
+  "notes": "…"
+}
+```
+
+**Monthly** (`monthly_report_schema`):
+
+```json
+{
+  "overview": "…",
+  "weekly_breakdown": [{ "iso_week": "2026-W19", "theme": "…", "summary": "2–3 sentences." }],
+  "cumulative_technical_progress": "…",
+  "github_trends": {
+    "issues": { "new": 3, "closed": 2, "open_at_month_end": 5 },
+    "branches": { "new": 1, "closed": 0, "open_at_month_end": 2 }
+  },
+  "recurring_challenges": ["…"],
+  "solutions_and_resolutions": "…",
+  "unresolved_carried_forward": "…",
+  "metrics": { "commits": 42, "weekly_reports_used": 4 }
+}
+```
+
+**Project** (`project_report_schema`):
+
+```json
+{
+  "abstract": "…",
+  "introduction": "…",
+  "project_timeline": "…",
+  "technical_architecture": "…",
+  "development_activity_summary": {
+    "commits_total": 120,
+    "issues_open": 3,
+    "issues_closed": 10,
+    "branches_open": 2,
+    "branches_closed": 8
+  },
+  "challenges_log": [{ "title": "…", "first_observed": "2026-W12", "status": "Resolved", "description": "…", "resolution": "…" }],
+  "results_and_outcomes": "…",
+  "discussion": "…",
+  "conclusion": "…",
+  "appendix": "…"
+}
+```
+
+**Consistency checks (helper, all phases):**
+
+- Required keys present; arrays non-null; counts are numbers ≥ 0.
+- Weekly: `commits[].date` parseable UTC; ISO week in request matches commit dates.
+- Monthly: `weekly_breakdown` length ≤ number of week files shipped; metrics align with supplied counts when provided.
+- Project: `development_activity_summary` numbers match cache summary when cache is included in the request.
+- Reject empty `summary` / `overview` / `abstract` if the period had commits (configurable warn vs fail).
+
+**Prompts/templates (follow-up):** Update appendix prompts to demand JSON matching these schemas; templates remain the Markdown **render target** (not sent as the model’s output format).
 
 ## Templates and prompts
 
@@ -399,7 +509,7 @@ Write for a reader who has not seen weekly/monthly files: self-contained, profes
 ## Cross-cutting
 
 - **Phase 1:** HTTPS + optional GitHub token; no git binary required for baseline.
-- **Phases 2–4:** OpenRouter-compatible API per `ai:config`; debug responses optional under `ai_debug/`.
+- **Phases 2–4:** OpenRouter-compatible API per `ai:config`; one completion per report; JSON validated then rendered to Markdown; debug may store raw JSON under `ai_debug/`.
 - **Resilience:** per-repo and per-report-file failures isolated; partial success reflected in completion objects.
 - **Code documentation:** module docstrings, public API on façade classes, brief schema comment in handler or README.
 
@@ -416,7 +526,7 @@ Write for a reader who has not seen weekly/monthly files: self-contained, profes
 | Cache semantics | Commits/issues/branches cumulative merge defined |
 | `github_current_state` fallback | Defined |
 | Snapshot naming | `safe_filename(url + "_state").json` (algorithm TBD) |
-| Report rules | UTC ISO weeks, skip existing files, holistic project doc |
+| Report pipeline | 1 API call/report; JSON validate → Markdown; final vs `_current` |
 | Templates & prompts | **Complete text in appendix** (see below) |
 | Helper naming | `{modulename}_helper` in `modules/` |
 | AI / OpenRouter | `ai:config` + `api_keys/` (gitignored) |
@@ -438,7 +548,7 @@ Write for a reader who has not seen weekly/monthly files: self-contained, profes
 3. **Multi-repo reports** — Recommend: **per-repo subdirectories** under each output path, e.g. `weekly_report/wolodkin_de_nbi/week_2026-W20.md`, so two entries in `github_repos` do not collide.
 4. **Completion object** — Standard shape for all modules, e.g. `{ "ok": bool, "repos": [{ "url", "ok", "error?", "artifacts": [] }], "errors": [] }`; `main` exits `0` only if all required steps ok (or document partial-success exit code `1`).
 5. **`paths.github_token_file`** — Add to config (e.g. `api_keys/github.txt`) for private org repos and rate limits; optional for public-only smoke tests.
-6. **AI output format** — **No `response_format` in config or code.** Report phases (2–4) request **plain Markdown** from OpenRouter `/chat/completions` (default message content only). Do not send `response_format` in API payloads.
+6. **AI output format** — **No `response_format` in config.** Phases 2–4 set JSON schema **`response_format` in code only**; validate JSON, then render Markdown. Do not ask the model for raw Markdown in the completion body.
 7. **Branch “closed” detection** — Phase 1 minimum: branch missing from Branches API → `closed` + `closed_at`; optional later: compare API against default branch.
 8. **CLI surface** — Recommend: `python main.py sync` \| `weekly` \| `monthly` \| `project` \| `all`; optional `--repo-index` / `--repo-url` for single repo.
 9. **`.gitignore`** — Add `github_current_state/`, `weekly_report/`, `monthly_report/`, `project_report/` (or only if under project tree) so snapshots and generated reports are not committed by mistake.
@@ -448,9 +558,9 @@ Write for a reader who has not seen weekly/monthly files: self-contained, profes
 | Phase | Done when |
 |-------|-----------|
 | **1** | Running `sync` writes/updates `*_state.json` per `github_repos` entry; merge preserves full commit history; log shows resolved state directory |
-| **2** | At least one `week_YYYY-WNN.md` per repo with commits in that week; skips existing file |
-| **3** | `month_YYYY-MM.md` for a completed month with weeklies present |
-| **4** | Single holistic `project` Markdown per repo (filename TBD, e.g. `project_documentation.md` in `paths.project_report`) |
+| **2** | One API call per week; validated JSON → `week_…md` or `week_…_current.md`; final not overwritten |
+| **3** | One API call per month after weeklies; weeklies attached; `month_…md` or `month_…_current.md` |
+| **4** | One API call; monthlies attached; `project_documentation.md` / `_current.md` |
 | **Docs** | README: install, config, CLI, token files; docstrings on public module APIs |
 
 ### Optional (defer)
@@ -471,7 +581,7 @@ Write for a reader who has not seen weekly/monthly files: self-contained, profes
 **Phases 2–4**
 
 4. `modules/weekly_report`, `monthly_report`, `project_report` (+ helpers).
-5. Copy appendix templates/prompts into `templates/` and `prompts/` (if not already on disk).
+5. Copy appendix templates/prompts into `templates/` and `prompts/`; **revise prompts** to require phase JSON schemas (not raw Markdown from the model).
 6. `main.py` orchestration for report phases.
 7. Update README (usage, config table, phase commands, requirements).
 
