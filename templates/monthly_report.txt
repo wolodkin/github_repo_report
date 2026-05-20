@@ -1,0 +1,3 @@
+# Monthly Report — {{REPO_DISPLAY_NAME}} — {{MONTH_NAME}} {{YEAR}}
+
+Rendered from validated JSON by monthly_report_helper.render_monthly_markdown.

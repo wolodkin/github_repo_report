@@ -224,5 +224,6 @@ __marimo__/
 api_keys/
 ai_debug/
 
-# States
+# Generated data and reports
 github_current_state/
+reports/

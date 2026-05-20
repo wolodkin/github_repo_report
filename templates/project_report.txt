@@ -1,0 +1,3 @@
+# Project Documentation — {{REPO_DISPLAY_NAME}}
+
+Rendered from validated JSON by project_report_helper.render_project_markdown.

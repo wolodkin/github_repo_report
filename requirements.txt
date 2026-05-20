@@ -1,0 +1,2 @@
+# Install with system Python: pip install --user -r requirements.txt
+jsonschema>=4.21.0

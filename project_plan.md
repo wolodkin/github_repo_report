@@ -17,7 +17,7 @@ This document evolves incrementally. Last substantive update: report pipeline (1
 | **3** | `modules/monthly_report` (+ `_helper`) | Monthly reports from completed weekly files + AI |
 | **4** | `modules/project_report` (+ `_helper`) | Overall project documentation (holistic rewrite from monthlies + cache) |
 
-[`main.py`](main.py) loads config, orchestrates phases (flags or subcommands TBD), injects config into each module constructor, maps completion results to exit codes.
+[`main.py`](main.py) loads config and orchestrates phases. **`reports`** and **`all`** run [`modules/report_orchestrator.py`](modules/report_orchestrator.py): **weekly (missing) → monthly → project** (project only if a **new final** monthly was written in that run). Single-phase commands `weekly`, `monthly`, `project` remain available.
 
 ## Phase 1 code layout (`main.py` + `modules/github_handler`)
 
@@ -151,18 +151,18 @@ flowchart TB
 
 | Period state | Weekly filename | Monthly filename |
 |--------------|-----------------|------------------|
-| **Week completed** (ISO week ended in UTC) | `week_YYYY-WNN.md` | — |
-| **Week in progress** | `week_YYYY-WNN_current.md` | — |
-| **Month completed** | — | `month_YYYY-MM.md` |
-| **Month in progress** | — | `month_YYYY-MM_current.md` |
+| **Week completed** (ISO week ended in UTC) | `YYYY-MM-week_N.md` | — |
+| **Week in progress** | `YYYY-MM-week_N_current.md` | — |
+| **Month completed** | — | `YYYY-MM.md` |
+| **Month in progress** | — | `YYYY-MM_current.md` |
 
 - **Final** files (`*.md` without suffix): written once when the period is **closed**; **never overwritten** (skip if present unless `force_regenerate` is added later).
 - **Preliminary** (`*_current.md`): at most **one** per period; each run **deletes** the previous `_current` for that same week/month, then writes a new one.
 - When a week/month **becomes completed**, generate the final file if missing; keep or drop `_current` after final exists (recommend: **delete** `_current` once final is written).
 
-**Project report:** `project_documentation.md` (final) and `project_documentation_current.md` (preliminary while project/month still “open”); same single-`_current` rule.
+**Project report:** `{repo_name}.md` (final) and `{repo_name}_current.md` (preliminary while any month still open); same single-`_current` rule.
 
-Paths: under `paths.weekly_report` / `monthly_report` / `project_report`, with **per-repo subdirectories** (see readiness §3).
+Paths: under `paths.weekly_report` / `monthly_report` / `project_report` from config, with **per-repo subdirectories** using **repo name only** (`de_nbi`, not `owner_repo`). Weekly `YYYY-MM` uses the month with the most commits in that ISO week (tie: earliest commit). Stale `*_current.md` files are removed when the matching final exists (`report_paths_helper.cleanup_stale_current_files`).
 
 ### AI call contract (all report phases)
 
@@ -171,6 +171,12 @@ Paths: under `paths.weekly_report` / `monthly_report` / `project_report`, with *
 3. On validation failure: log, optionally **one retry** with error hint; do not write Markdown.
 4. Render validated JSON → Markdown using the matching file in [`templates/`](templates/) (placeholders filled from JSON keys).
 5. Store raw JSON in `ai_debug/` when `store_ai_responses` is true.
+6. Log once per process which model + endpoint is active (human-readable terminal line).
+7. Endpoint/auth transport failures raise a dedicated AI endpoint error:
+   - emit a warning,
+   - rollback report files created in that failed repo run,
+   - stop downstream phases in orchestrated pipeline (`weekly` fail => no `monthly/project`; `monthly` fail => no `project`).
+8. Auth rule: remote endpoints (OpenRouter/OpenAI-compatible) require API key; local Ollama endpoint can run without key.
 
 Config still has **no** `response_format` key; schemas live in code (e.g. `modules/weekly_report_schema.py` or inside `_helper`).
 
@@ -187,8 +193,10 @@ Config still has **no** `response_format` key; schemas live in code (e.g. `modul
 
 ### Phase 4 — `modules/project_report`
 
-- **One endpoint call** per repo; attach **all monthly report files** (and optional cache summary).
-- Holistic project doc; validate → `project_documentation.md` / `project_documentation_current.md`.
+- Runs when orchestrated after monthly **only if** that run created at least one **final** monthly (`YYYY-MM.md`).
+- Requires at least one final monthly on disk; uses **final monthlies only** (no `_current` drafts).
+- **One endpoint call** per triggered repo; holistic rewrite (`refresh=True` in pipeline).
+- Output: `{repo_name}.md` or `{repo_name}_current.md` while calendar months are still open.
 
 Each module: **constructor(config)**, **run/completion API**, optional **`{name}_helper`**, returns completion object to `main.py`.
 
@@ -545,12 +553,12 @@ Write for a reader who has not seen weekly/monthly files: self-contained, profes
 
 1. **`safe_filename` algorithm** — Recommend: SHA-256 prefix (8 chars) + slug `owner_repo` for readability, store `repo_url` inside JSON; or reversible percent-encoding of full URL. Document in `github_handler_helper`.
 2. **Path resolution** — Treat `paths.*` values starting with `/` as **relative to project root** (strip leading `/` after join), not filesystem root. Apply to `weekly_report`, `monthly_report`, `project_report`, `github_current_state`.
-3. **Multi-repo reports** — Recommend: **per-repo subdirectories** under each output path, e.g. `weekly_report/wolodkin_de_nbi/week_2026-W20.md`, so two entries in `github_repos` do not collide.
+3. **Multi-repo reports** — **Decided:** per-repo subdirectories under each config path, folder = **repo name only**, e.g. `reports/weekly_report/de_nbi/2026-05-week_20.md`.
 4. **Completion object** — Standard shape for all modules, e.g. `{ "ok": bool, "repos": [{ "url", "ok", "error?", "artifacts": [] }], "errors": [] }`; `main` exits `0` only if all required steps ok (or document partial-success exit code `1`).
 5. **`paths.github_token_file`** — Add to config (e.g. `api_keys/github.txt`) for private org repos and rate limits; optional for public-only smoke tests.
 6. **AI output format** — **No `response_format` in config.** Phases 2–4 set JSON schema **`response_format` in code only**; validate JSON, then render Markdown. Do not ask the model for raw Markdown in the completion body.
 7. **Branch “closed” detection** — Phase 1 minimum: branch missing from Branches API → `closed` + `closed_at`; optional later: compare API against default branch.
-8. **CLI surface** — Recommend: `python main.py sync` \| `weekly` \| `monthly` \| `project` \| `all`; optional `--repo-index` / `--repo-url` for single repo.
+8. **CLI surface** — `sync` \| `reports` (weekly→monthly→project) \| `all` \| `weekly` \| `monthly` \| `project` (standalone).
 9. **`.gitignore`** — Add `github_current_state/`, `weekly_report/`, `monthly_report/`, `project_report/` (or only if under project tree) so snapshots and generated reports are not committed by mistake.
 
 ### Phase-by-phase minimum deliverable
@@ -558,9 +566,9 @@ Write for a reader who has not seen weekly/monthly files: self-contained, profes
 | Phase | Done when |
 |-------|-----------|
 | **1** | Running `sync` writes/updates `*_state.json` per `github_repos` entry; merge preserves full commit history; log shows resolved state directory |
-| **2** | One API call per week; validated JSON → `week_…md` or `week_…_current.md`; final not overwritten |
-| **3** | One API call per month after weeklies; weeklies attached; `month_…md` or `month_…_current.md` |
-| **4** | One API call; monthlies attached; `project_documentation.md` / `_current.md` |
+| **2** | One API call per week; validated JSON → `YYYY-MM-week_N.md` or `…_current.md`; final not overwritten |
+| **3** | One API call per month after weeklies; weeklies attached; `YYYY-MM.md` or `YYYY-MM_current.md` |
+| **4** | One API call; monthlies attached; `{repo_name}.md` / `{repo_name}_current.md` |
 | **Docs** | README: install, config, CLI, token files; docstrings on public module APIs |
 
 ### Optional (defer)

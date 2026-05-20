@@ -1,0 +1,3 @@
+# Weekly Report — {{REPO_DISPLAY_NAME}} — Week {{ISO_WEEK}}, {{YEAR}} ({{WEEK_START_DATE}} to {{WEEK_END_DATE}})
+
+Rendered from validated JSON by weekly_report_helper.render_weekly_markdown.

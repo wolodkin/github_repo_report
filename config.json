@@ -1,45 +1,55 @@
 {
     "paths": {
-        "project_remark_and_log_file_name":"project_remark.txt",
-        "github_current_state":"github_current_state/",
-        "weekly_report": "/weekly_report",
-        "monthly_report": "/monthly_report",
-        "project_report": "/project_report"
+        "project_remark_and_log_file_name": "project_remark.txt",
+        "github_current_state": "github_current_state/",
+        "github_token_file": "api_keys/github.txt",
+        "weekly_report": "reports/weekly_report/",
+        "monthly_report": "reports/monthly_report/",
+        "project_report": "reports/"
     },
 
-    "github_repos":["https://github.com/wolodkin/de_nbi", 
-                    "https://github.com/Senckenberg-DCBiodivIT/BITS"],
+    "github_repos": [
+        "https://github.com/wolodkin/de_nbi",
+        "https://github.com/Senckenberg-DCBiodivIT/BITS"
+    ],
 
     "ai:config": {
-        "active_model_name":"nvidia/nemotron-3-super-120b-a12b:free_openrouter",
-        "active_model_name_comment":"Define the active model name here. This is the model that will be used to generate the report.",
+        "active_model_name": "nvidia/nemotron-3-super-120b-a12b:free_openrouter",
+        "active_model_name_comment": "Model used for report generation (Phases 2-4).",
 
-        "ai_debug":{
-            "ai_debug_comment":"Each AI response will be stored in the ai_debug/ directory. This is useful for debugging and testing.",
+        "ai_debug": {
+            "ai_debug_comment": "Store raw AI responses under ai_debug/ when enabled.",
             "store_ai_responses": true,
-            "store_ai_responses_path":"ai_debug/"
+            "store_ai_responses_path": "ai_debug/"
         },
 
         "ai_model_config": {
             "nvidia/nemotron-3-super-120b-a12b:free_openrouter": {
-                "comment":"This is a very good chat model for local usage with a great context window and very good performance. But it is not the best for more complex tasks",
+                "comment": "OpenRouter-compatible endpoint; reports use JSON in code, rendered to Markdown.",
                 "url": "https://openrouter.ai/api/v1",
                 "model": "nvidia/nemotron-3-super-120b-a12b:free",
-                "response_format":{"type":"json_object"},
-                "response_format_comment":"Optional for OpenRouter /chat/completions: use response_format like {\"type\":\"json_object\"} for valid JSON or {\"type\":\"json_schema\",\"json_schema\":{...}} for strict schema output.",
-                "max_tokens": 250000,
+                "num_ctx": 250000,
                 "temperature": 0.3,
                 "timeout": 1000,
                 "stream": false,
-                "api_key_file":"api_keys/openrouter.txt"
+                "api_key_file": "api_keys/openrouter.txt"
             }
         }
     },
 
     "prompts_and_templates": {
-        "comment":"Prompts and tempates are connented to eachother. The prompt is used to generate the template and the template is used to generate the report.",
-        "weekly_report": {"prompt":"/prompts/weekly_report.txt", "template":"/templates/weekly_report.txt"},
-        "monthly_report": {"prompt":"/prompts/monthly_report.txt", "template":"/templates/monthly_report.txt"},
-        "project_report": {"prompt":"/prompts/project_report.txt", "template":"/templates/project_report.txt"}
+        "comment": "Prompts request JSON matching schemas in code; templates are Markdown render targets.",
+        "weekly_report": {
+            "prompt": "prompts/weekly_report.txt",
+            "template": "templates/weekly_report.txt"
+        },
+        "monthly_report": {
+            "prompt": "prompts/monthly_report.txt",
+            "template": "templates/monthly_report.txt"
+        },
+        "project_report": {
+            "prompt": "prompts/project_report.txt",
+            "template": "templates/project_report.txt"
+        }
     }
 }
