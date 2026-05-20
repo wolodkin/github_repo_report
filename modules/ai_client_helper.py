@@ -38,6 +38,46 @@ def _is_local_endpoint(url: str) -> bool:
     return "ollama" in host
 
 
+def _build_chat_url(endpoint_url: str, *, local_endpoint: bool) -> str:
+    """
+    Build the final chat URL.
+
+    - Local Ollama: accept explicit /api/chat or /api/generate as-is.
+      If only host/base is provided, default to /api/chat.
+    - OpenAI-compatible: accept explicit .../chat/completions as-is,
+      otherwise append /chat/completions.
+    """
+    base = endpoint_url.rstrip("/")
+    if local_endpoint:
+        if base.endswith("/api/chat") or base.endswith("/api/generate"):
+            return base
+        return base + "/api/chat"
+    if base.endswith("/chat/completions"):
+        return base
+    return base + "/chat/completions"
+
+
+def _extract_content(raw: dict[str, Any], *, local_endpoint: bool) -> str:
+    """Extract assistant content from provider-specific response payload."""
+    if local_endpoint:
+        # Ollama /api/chat format:
+        # {"message": {"role": "assistant", "content": "..."} ...}
+        msg = raw.get("message") or {}
+        content = msg.get("content")
+        if not isinstance(content, str):
+            raise AIEndpointError("Local AI response missing message.content")
+        return content
+    # OpenAI-compatible format:
+    # {"choices":[{"message":{"content":"..."}}]}
+    try:
+        content = raw["choices"][0]["message"]["content"]
+    except Exception as exc:
+        raise AIEndpointError("Remote AI response missing choices[0].message.content") from exc
+    if not isinstance(content, str):
+        raise AIEndpointError("Remote AI content is not a string")
+    return content
+
+
 def _log_active_model_once(model_cfg: dict[str, Any]) -> None:
     global _MODEL_LOGGED
     if _MODEL_LOGGED:
@@ -90,7 +130,7 @@ def chat_json(
     num_ctx = int(model_cfg.get("num_ctx", model_cfg.get("max_tokens", 8192)))
     user_payload = truncate_to_num_ctx(user_payload, num_ctx)
 
-    url = endpoint_url.rstrip("/") + "/chat/completions"
+    url = _build_chat_url(endpoint_url, local_endpoint=local_endpoint)
     body: dict[str, Any] = {
         "model": model_cfg["model"],
         "messages": [
@@ -125,7 +165,7 @@ def chat_json(
         raise AIEndpointError(f"AI endpoint transport error: {exc}") from exc
 
     _maybe_store_debug(config, debug_name, raw)
-    content = raw["choices"][0]["message"]["content"]
+    content = _extract_content(raw, local_endpoint=local_endpoint)
     return _parse_json_content(content)
 
 

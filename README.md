@@ -16,6 +16,7 @@ Edit [`config.json`](config.json) (paths, `github_repos`, AI model). API keys (n
 - `api_keys/openrouter.txt` — OpenRouter for report generation (**required for remote endpoints**)
 - `api_keys/github.txt` — optional; improves rate limits / private repos
 - Local Ollama endpoints (`http://localhost:11434/...`) can run **without** API keys.
+  - You can set `url` either to the host (`http://localhost:11434`) or directly to `http://localhost:11434/api/chat`.
  
 Security policy: AI and GitHub keys are read from configured key files only (no environment-variable fallback).
 

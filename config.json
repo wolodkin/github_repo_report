@@ -14,7 +14,7 @@
     ],
 
     "ai:config": {
-        "active_model_name": "nvidia/nemotron-3-super-120b-a12b:free_openrouter",
+        "active_model_name": "nemotron-3-super:cloud",
         "active_model_name_comment": "Model used for report generation (Phases 2-4).",
 
         "ai_debug": {
@@ -33,6 +33,16 @@
                 "timeout": 1000,
                 "stream": false,
                 "api_key_file": "api_keys/openrouter.txt"
+            },
+
+            "nemotron-3-super:cloud": {
+                "comment": "Local Ollama instance in the cloud",
+                "url": "http://localhost:11434/api/chat",
+                "model": "nemotron-3-super:cloud",
+                "num_ctx": 250000,
+                "temperature": 0.3,
+                "timeout": 1000,
+                "stream": false
             }
         }
     },
